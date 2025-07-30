@@ -12,7 +12,7 @@ WAREHOUSE_ENTRIES_FILE = 'warehouse_entries.csv'
 def load_products():
     """
     products.csv dosyasını yükler. 
-    Dosya yoksa hata verir, sütunlar eksikse hata verir.
+    Dosya yoksa boş bir DataFrame oluşturur ve başlıkları belirler.
     Kodlama ve ayraç hatalarını ele almak için çeşitli denemeler yapar.
     NOT: Ayraç olarak noktalı virgül (;) kullanıldığını varsayar.
     """
@@ -43,8 +43,9 @@ def load_products():
             st.error(f"'{PRODUCTS_FILE}' dosyası hiçbir bilinen kodlama veya ayraçla okunamadı. Lütfen dosyanın formatını kontrol edin.")
             return pd.DataFrame(columns=['SKU', 'Urun Adi'])
         
+        # Eğer dosya yüklendi ama boşsa, boş bir DataFrame döndür
         if df.empty:
-            st.error(f"'{PRODUCTS_FILE}' dosyası boş görünüyor veya okunamadı. Lütfen ürün bilgisi girin.")
+            st.warning(f"'{PRODUCTS_FILE}' dosyası boş görünüyor. Lütfen ürün bilgisi girin.")
             return pd.DataFrame(columns=['SKU', 'Urun Adi'])
 
         original_columns = list(df.columns)
@@ -74,8 +75,18 @@ def load_products():
         
         return df
     else:
-        st.error(f"'{PRODUCTS_FILE}' dosyası bulunamadı. Lütfen ürünler CSV'sini uygulama ile aynı klasöre yerleştirin.")
+        # Dosya yoksa, boş bir DataFrame oluştur ve kullanıcıya bilgi ver
+        st.info(f"'{PRODUCTS_FILE}' dosyası bulunamadı. Yeni ürünler ekleyerek başlayabilirsiniz.")
         return pd.DataFrame(columns=['SKU', 'Urun Adi'])
+
+def save_products(df):
+    """Ürün DataFrame'ini CSV dosyasına kaydeder."""
+    try:
+        df.to_csv(PRODUCTS_FILE, index=False, encoding='utf-8', header=True)
+        return True
+    except Exception as e:
+        st.error(f"Ürünler kaydedilirken bir hata oluştu: {e}")
+        return False
 
 # --- Depo Giriş/Çıkışlarını Yükle ve Kaydet ---
 @st.cache_data(ttl=1) 
@@ -147,9 +158,43 @@ if 'warehouse_entries_df' not in st.session_state or st.session_state['warehouse
 products_df = st.session_state['products_df']
 warehouse_entries_df = st.session_state['warehouse_entries_df']
 
+# --- Yeni Ürün Ekleme Bölümü ---
+st.markdown("---")
+st.subheader("➕ Yeni Ürün Ekle")
+new_product_sku = st.text_input("Yeni Ürün SKU'su", key="new_sku_input").strip()
+new_product_name = st.text_input("Yeni Ürün Adı", key="new_product_name_input").strip()
+
+if st.button("Yeni Ürünü Kaydet"):
+    if new_product_sku and new_product_name:
+        if new_product_sku in products_df['SKU'].values:
+            st.warning(f"SKU '{new_product_sku}' zaten mevcut. Lütfen farklı bir SKU girin.")
+        else:
+            new_product_data = pd.DataFrame([{
+                'SKU': new_product_sku,
+                'Urun Adi': new_product_name
+            }])
+            
+            # DataFrame boşsa doğrudan ata, değilse birleştir
+            if products_df.empty:
+                st.session_state['products_df'] = new_product_data
+            else:
+                st.session_state['products_df'] = pd.concat([products_df, new_product_data], ignore_index=True)
+            
+            if save_products(st.session_state['products_df']):
+                st.success(f"Yeni ürün **{new_product_name}** (SKU: **{new_product_sku}**) başarıyla eklendi!")
+                load_products.clear() # Ürün önbelleğini temizle
+                st.session_state['products_df'] = load_products() # Güncel veriyi yeniden yükle
+                st.rerun() # Sayfayı yeniden yükle
+            else:
+                st.error("Yeni ürün kaydedilirken bir sorun oluştu.")
+    else:
+        st.warning("Lütfen hem SKU hem de Ürün Adı girin.")
+
+st.markdown("---") # Yeni ürün ekleme alanı ile ürün arama arasına ayırıcı
+
 # Eğer ürün listesi boşsa uyarı ver
 if products_df.empty:
-    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen 'products.csv' dosyasını kontrol edin ve 'SKU', 'Urun Adi' sütunlarının olduğundan emin olun.")
+    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen 'products.csv' dosyasını kontrol edin veya yukarıdan yeni ürün ekleyin.")
 else:
     # --- Ürün Arama ve Seçme ---
     st.subheader("Ürün Bilgileri")
