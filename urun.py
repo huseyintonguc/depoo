@@ -12,7 +12,7 @@ WAREHOUSE_ENTRIES_FILE = 'warehouse_entries.csv'
 def load_products():
     """
     products.csv dosyasını yükler. 
-    Dosya yoksa hata verir, sütunlar eksikse hata verir.
+    Dosya yoksa boş bir DataFrame oluşturur ve başlıkları belirler.
     Kodlama ve ayraç hatalarını ele almak için çeşitli denemeler yapar.
     NOT: Ayraç olarak noktalı virgül (;) kullanıldığını varsayar.
     """
@@ -27,6 +27,32 @@ def load_products():
         for enc in encodings:
             try:
                 df = pd.read_csv(PRODUCTS_FILE, encoding=enc, sep=separator)
+                # Sütun isimlerini normalize et ve kontrol et
+                original_columns = list(df.columns)
+                normalized_columns = [col.strip().lower() for col in original_columns]
+
+                sku_col_name = None
+                urun_adi_col_name = None
+
+                sku_variations = ['sku', 'urun kodu', 'ürün kodu']
+                urun_adi_variations = ['urun adi', 'ürün adı', 'urunismi', 'ürün ismi', 'product name']
+
+                for i, norm_col in enumerate(normalized_columns):
+                    if sku_col_name is None and norm_col in sku_variations:
+                        sku_col_name = original_columns[i]
+                    if urun_adi_col_name is None and norm_col in urun_adi_variations:
+                        urun_adi_col_name = original_columns[i]
+                    
+                    if sku_col_name and urun_adi_col_name:
+                        break
+
+                if not sku_col_name or not urun_adi_col_name:
+                    st.sidebar.error(f"'{PRODUCTS_FILE}' dosyasında 'SKU' ve 'Urun Adi' (veya benzeri) sütunları bulunamadı. Tespit edilen sütunlar: {original_columns}.")
+                    return pd.DataFrame(columns=['SKU', 'Urun Adi']) 
+
+                df = df[[sku_col_name, urun_adi_col_name]] 
+                df.columns = ['SKU', 'Urun Adi'] 
+                
                 st.sidebar.success(f"'{PRODUCTS_FILE}' dosyası '{enc}' kodlaması ve '{separator}' ayraçla yüklendi.")
                 loaded_successfully = True
                 break 
@@ -43,46 +69,37 @@ def load_products():
             st.error(f"'{PRODUCTS_FILE}' dosyası hiçbir bilinen kodlama veya ayraçla okunamadı. Lütfen dosyanın formatını kontrol edin.")
             return pd.DataFrame(columns=['SKU', 'Urun Adi'])
         
+        # Eğer dosya yüklendi ama boşsa (sadece başlıklar varsa), boş bir DataFrame döndür
         if df.empty:
-            st.error(f"'{PRODUCTS_FILE}' dosyası boş görünüyor veya okunamadı. Lütfen ürün bilgisi girin.")
+            st.warning(f"'{PRODUCTS_FILE}' dosyası boş görünüyor. Lütfen ürün bilgisi girin.")
             return pd.DataFrame(columns=['SKU', 'Urun Adi'])
 
-        original_columns = list(df.columns)
-        normalized_columns = [col.strip().lower() for col in original_columns]
-
-        sku_col_name = None
-        urun_adi_col_name = None
-
-        sku_variations = ['sku', 'urun kodu', 'ürün kodu']
-        urun_adi_variations = ['urun adi', 'ürün adı', 'urunismi', 'ürün ismi', 'product name']
-
-        for i, norm_col in enumerate(normalized_columns):
-            if sku_col_name is None and norm_col in sku_variations:
-                sku_col_name = original_columns[i]
-            if urun_adi_col_name is None and norm_col in urun_adi_variations:
-                urun_adi_col_name = original_columns[i]
-            
-            if sku_col_name and urun_adi_col_name:
-                break
-
-        if not sku_col_name or not urun_adi_col_name:
-            st.error(f"'{PRODUCTS_FILE}' dosyasında 'SKU' ve 'Urun Adi' (veya benzeri) sütunları bulunamadı. Tespit edilen sütunlar: {original_columns}. Lütfen dosya formatını ve sütun başlıklarını kontrol edin.")
-            return pd.DataFrame(columns=['SKU', 'Urun Adi']) 
-
-        df = df[[sku_col_name, urun_adi_col_name]] 
-        df.columns = ['SKU', 'Urun Adi'] 
-        
         return df
     else:
-        st.error(f"'{PRODUCTS_FILE}' dosyası bulunamadı. Lütfen ürünler CSV'sini uygulama ile aynı klasöre yerleştirin.")
+        # Dosya yoksa, boş bir DataFrame oluştur ve kullanıcıya bilgi ver
+        st.info(f"'{PRODUCTS_FILE}' dosyası bulunamadı. Yeni ürünler ekleyerek başlayabilirsiniz.")
         return pd.DataFrame(columns=['SKU', 'Urun Adi'])
+
+def save_products(df):
+    """Ürün DataFrame'ini CSV dosyasına kaydeder."""
+    try:
+        # Boş DataFrame kaydetmemek için kontrol (dosyayı boşaltmayı engeller)
+        if df.empty and os.path.exists(PRODUCTS_FILE):
+            st.warning("Kaydedilecek ürün bulunamadı. Mevcut ürün dosyası boşaltılmadı.")
+            return False # Kaydetme işlemi yapılmadı
+        
+        df.to_csv(PRODUCTS_FILE, index=False, encoding='utf-8', header=True)
+        return True
+    except Exception as e:
+        st.error(f"Ürünler kaydedilirken bir hata oluştu: {e}")
+        return False
 
 # --- Depo Giriş/Çıkışlarını Yükle ve Kaydet ---
 @st.cache_data(ttl=1) 
 def load_warehouse_entries():
     """
     warehouse_entries.csv dosyasını yükler. 
-    Dosya yoksa boş bir DataFrame oluşturur ve başlıkları belirler.
+    Dosya yoksa veya boşsa boş bir DataFrame oluşturur ve başlıkları belirler.
     """
     if os.path.exists(WAREHOUSE_ENTRIES_FILE):
         try:
@@ -104,18 +121,21 @@ def load_warehouse_entries():
                 return df
             except pd.errors.EmptyDataError:
                 st.warning(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası boş. Yeni girişler beklenecek.")
+                # Boş dosya durumunda bile doğru sütunları içeren bir DataFrame döndür
                 return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
             except Exception as e:
                 st.error(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası okunurken beklenmedik bir hata oluştu (windows-1254): {e}.")
                 return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
         except pd.errors.EmptyDataError:
             st.warning(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası boş. Yeni girişler beklenecek.")
+            # Boş dosya durumunda bile doğru sütunları içeren bir DataFrame döndür
             return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
         except Exception as e:
             st.error(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası okunurken beklenmedik bir hata oluştu: {e}.")
             return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
     else:
         # Dosya yoksa, yeni bir DataFrame oluştururken 'Islem Tipi' sütununu da ekle
+        st.info(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası bulunamadı. İlk girişinizi yaparak oluşturabilirsiniz.")
         return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
 
 def save_warehouse_entry(entry_df):
@@ -124,6 +144,11 @@ def save_warehouse_entry(entry_df):
         # Tarih sütununu string olarak kaydetmek için ISO formatına çevir
         if 'Tarih' in entry_df.columns:
             entry_df['Tarih'] = entry_df['Tarih'].apply(lambda x: x.isoformat() if isinstance(x, (datetime.date, datetime.datetime)) else x)
+
+        # Eğer DataFrame boşsa ve dosya zaten varsa, dosyayı silmeyelim
+        if entry_df.empty and os.path.exists(WAREHOUSE_ENTRIES_FILE):
+            st.warning("Kaydedilecek depo işlemi bulunamadı. Mevcut depo dosyası boşaltılmadı.")
+            return False
 
         entry_df.to_csv(WAREHOUSE_ENTRIES_FILE, index=False, encoding='utf-8', header=True)
         return True 
@@ -140,16 +165,52 @@ st.markdown("Gün içinde depoya alınan ve depodan çıkan ürünleri buraya ka
 if 'products_df' not in st.session_state:
     st.session_state['products_df'] = load_products()
 
+# warehouse_entries_df için başlangıçta kontrol ve yükleme
 if 'warehouse_entries_df' not in st.session_state or st.session_state['warehouse_entries_df'] is None:
      st.session_state['warehouse_entries_df'] = load_warehouse_entries()
-
 
 products_df = st.session_state['products_df']
 warehouse_entries_df = st.session_state['warehouse_entries_df']
 
+
+# --- Yeni Ürün Ekleme Bölümü ---
+st.markdown("---")
+st.subheader("➕ Yeni Ürün Ekle")
+new_product_sku = st.text_input("Yeni Ürün SKU'su", key="new_sku_input").strip()
+new_product_name = st.text_input("Yeni Ürün Adı", key="new_product_name_input").strip()
+
+if st.button("Yeni Ürünü Kaydet"):
+    if new_product_sku and new_product_name:
+        # SKU'nun benzersizliğini kontrol et
+        if not products_df.empty and new_product_sku in products_df['SKU'].values:
+            st.warning(f"SKU '{new_product_sku}' zaten mevcut. Lütfen farklı bir SKU girin.")
+        else:
+            new_product_data = pd.DataFrame([{
+                'SKU': new_product_sku,
+                'Urun Adi': new_product_name
+            }])
+            
+            # DataFrame boşsa doğrudan ata, değilse birleştir
+            if products_df.empty:
+                st.session_state['products_df'] = new_product_data
+            else:
+                st.session_state['products_df'] = pd.concat([products_df, new_product_data], ignore_index=True)
+            
+            if save_products(st.session_state['products_df']):
+                st.success(f"Yeni ürün **{new_product_name}** (SKU: **{new_product_sku}**) başarıyla eklendi!")
+                load_products.clear() # Ürün önbelleğini temizle
+                st.session_state['products_df'] = load_products() # Güncel veriyi yeniden yükle
+                st.rerun() # Sayfayı yeniden yükle
+            else:
+                st.error("Yeni ürün kaydedilirken bir sorun oluştu.")
+    else:
+        st.warning("Lütfen hem SKU hem de Ürün Adı girin.")
+
+st.markdown("---") # Yeni ürün ekleme alanı ile ürün arama arasına ayırıcı
+
 # Eğer ürün listesi boşsa uyarı ver
 if products_df.empty:
-    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen 'products.csv' dosyasını kontrol edin ve 'SKU', 'Urun Adi' sütunlarının olduğundan emin olun.")
+    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen 'products.csv' dosyasını kontrol edin veya yukarıdan yeni ürün ekleyin.")
 else:
     # --- Ürün Arama ve Seçme ---
     st.subheader("Ürün Bilgileri")
@@ -259,7 +320,8 @@ else:
                 row = warehouse_entries_df.iloc[i]
                 
                 # Her buton için benzersiz bir key sağlamak önemli
-                unique_key = f"delete_button_{i}_{row['SKU']}_{row['Tarih']}" 
+                # Burada Tarih ve SKU'yu kullanarak daha benzersiz bir anahtar oluşturuyoruz
+                unique_key = f"delete_button_{i}_{row['SKU']}_{row['Tarih']}_{row['Adet']}_{row['Islem Tipi']}" 
                 
                 # Butonun yanına silinecek kaydın özetini gösterelim
                 display_text = f"{row['Tarih'].strftime('%d.%m.%Y')} - {row['Urun Adi']} ({row['SKU']}) - {row['Adet']} {row['Islem Tipi']}"
@@ -360,16 +422,4 @@ else:
                 product_total_cikis = final_filtered_df[final_filtered_df['Islem Tipi'] == 'Çıkış']['Adet'].sum()
                 
                 st.markdown(f"**{selected_product_for_report} için Toplam Giriş:** {product_total_giris} adet")
-                st.markdown(f"**{selected_product_for_report} için Toplam Çıkış:** {product_total_cikis} adet")
-                st.markdown(f"**{selected_product_for_report} için Net Stok Değişimi:** {product_total_giris - product_total_cikis} adet")
-                
-                st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
-            else:
-                st.info(f"{selected_product_for_report} için seçilen tarih aralığında hiçbir işlem bulunamadı.")
-        else:
-            # "Tüm Ürünler" seçiliyse, tarih filtrelenmiş tüm işlemleri göster
-            st.info("Seçilen tarih aralığındaki tüm ürünlerin hareketliliği aşağıdaki tabloda gösterilmektedir.")
-            st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
-            
-    else:
-        st.info("Raporlama için henüz hiç depo işlemi bulunmamaktadır.")
+                st.markdown(f"**{selected_product_for_report} için Toplam
