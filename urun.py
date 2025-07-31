@@ -1,114 +1,160 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import os
 
-# Firebase kütüphanelerini import et
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+# --- Veri Dosyaları Yolları ---
+PRODUCTS_FILE = 'products.csv'
+WAREHOUSE_ENTRIES_FILE = 'warehouse_entries.csv'
 
-# --- Firebase'i Başlat ---
-# secrets.toml dosyasından Firebase kimlik bilgilerini yükle
-# Streamlit Cloud'da otomatik olarak yüklenir.
-# Yerelde test ederken secrets.toml dosyasının .streamlit/ klasöründe olduğundan emin olun.
-try:
-    # Eğer Firebase zaten başlatılmadıysa başlat
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(st.secrets["firebase"])
-        firebase_admin.initialize_app(cred)
-    
-    db = firestore.client() # Firestore istemcisini al
-except Exception as e:
-    st.error(f"Firebase başlatılırken hata oluştu. Lütfen '.streamlit/secrets.toml' dosyanızı kontrol edin ve talimatlara göre yapılandırın: {e}")
-    st.stop() # Hata durumunda uygulamayı durdur
-
-# Firestore koleksiyon referansları
-PRODUCTS_COLLECTION = db.collection("products")
-WAREHOUSE_ENTRIES_COLLECTION = db.collection("warehouse_entries")
-
-
-# --- Ürün Listesini Yükle ve Kaydet ---
+# --- Ürün Listesini Yükle ---
 @st.cache_data(ttl=3600) # Ürünler genellikle sık değişmez, 1 saat önbellekte kalabilir
-def load_products_from_firestore():
-    """Firestore'dan ürün listesini yükler."""
-    try:
-        docs = PRODUCTS_COLLECTION.stream()
-        products_list = []
-        for doc in docs:
-            product_data = doc.to_dict()
-            product_data['SKU'] = doc.id # SKU'yu doküman ID'si olarak kullan
-            products_list.append(product_data)
+def load_products():
+    """
+    products.csv dosyasını yükler. 
+    Dosya yoksa boş bir DataFrame oluşturur ve başlıkları belirler.
+    Kodlama ve ayraç hatalarını ele almak için çeşitli denemeler yapar.
+    NOT: Ayraç olarak noktalı virgül (;) kullanıldığını varsayar.
+    """
+    if os.path.exists(PRODUCTS_FILE):
+        df = pd.DataFrame() 
         
-        df = pd.DataFrame(products_list)
+        encodings = ['utf-8', 'windows-1254', 'latin-1']
+        separator = ';' 
+
+        loaded_successfully = False
         
-        # Gerekli sütunların varlığını kontrol et
-        if 'SKU' not in df.columns or 'Urun Adi' not in df.columns:
-            st.sidebar.error("Ürünler koleksiyonunda 'SKU' veya 'Urun Adi' sütunları bulunamadı. Lütfen Firestore'daki 'products' koleksiyonunuzu kontrol edin.")
+        for enc in encodings:
+            try:
+                df = pd.read_csv(PRODUCTS_FILE, encoding=enc, sep=separator)
+                # Sütun isimlerini normalize et ve kontrol et
+                original_columns = list(df.columns)
+                normalized_columns = [col.strip().lower() for col in original_columns]
+
+                sku_col_name = None
+                urun_adi_col_name = None
+
+                sku_variations = ['sku', 'urun kodu', 'ürün kodu']
+                urun_adi_variations = ['urun adi', 'ürün adı', 'urunismi', 'ürün ismi', 'product name']
+
+                for i, norm_col in enumerate(normalized_columns):
+                    if sku_col_name is None and norm_col in sku_variations:
+                        sku_col_name = original_columns[i]
+                    if urun_adi_col_name is None and norm_col in urun_adi_variations:
+                        urun_adi_col_name = original_columns[i]
+                    
+                    if sku_col_name and urun_adi_col_name:
+                        break
+
+                if not sku_col_name or not urun_adi_col_name:
+                    st.sidebar.error(f"'{PRODUCTS_FILE}' dosyasında 'SKU' ve 'Urun Adi' (veya benzeri) sütunları bulunamadı. Tespit edilen sütunlar: {original_columns}.")
+                    return pd.DataFrame(columns=['SKU', 'Urun Adi']) 
+
+                df = df[[sku_col_name, urun_adi_col_name]] 
+                df.columns = ['SKU', 'Urun Adi'] 
+                
+                st.sidebar.success(f"'{PRODUCTS_FILE}' dosyası '{enc}' kodlaması ve '{separator}' ayraçla yüklendi.")
+                loaded_successfully = True
+                break 
+            except UnicodeDecodeError:
+                continue 
+            except pd.errors.ParserError as e:
+                st.sidebar.warning(f"'{PRODUCTS_FILE}' dosyası '{enc}' kodlaması ve '{separator}' ayraçla ayrıştırılamadı. Hata: {e}")
+                continue 
+            except Exception as e:
+                st.sidebar.error(f"'{PRODUCTS_FILE}' dosyası okunurken beklenmedik bir hata oluştu: {e}.")
+                return pd.DataFrame(columns=['SKU', 'Urun Adi'])
+
+        if not loaded_successfully:
+            st.error(f"'{PRODUCTS_FILE}' dosyası hiçbir bilinen kodlama veya ayraçla okunamadı. Lütfen dosyanın formatını kontrol edin.")
+            return pd.DataFrame(columns=['SKU', 'Urun Adi'])
+        
+        # Eğer dosya yüklendi ama boşsa (sadece başlıklar varsa), boş bir DataFrame döndür
+        if df.empty:
+            st.warning(f"'{PRODUCTS_FILE}' dosyası boş görünüyor. Lütfen ürün bilgisi girin.")
             return pd.DataFrame(columns=['SKU', 'Urun Adi'])
 
-        # Sadece gerekli sütunları al ve sırala
-        df = df[['SKU', 'Urun Adi']].sort_values(by='Urun Adi', ascending=True).reset_index(drop=True)
-        
-        if df.empty:
-            st.warning("Ürünler listesi boş görünüyor. Lütfen yeni ürün ekleyin.")
-        else:
-            st.sidebar.success("Ürün listesi Firebase Firestore'dan başarıyla yüklendi.")
         return df
-    except Exception as e:
-        st.error(f"Ürünler Firebase Firestore'dan yüklenirken bir hata oluştu: {e}")
+    else:
+        # Dosya yoksa, boş bir DataFrame oluştur ve kullanıcıya bilgi ver
+        st.info(f"'{PRODUCTS_FILE}' dosyası bulunamadı. Yeni ürünler ekleyerek başlayabilirsiniz.")
         return pd.DataFrame(columns=['SKU', 'Urun Adi'])
 
-def save_product_to_firestore(sku, product_name):
-    """Yeni ürünü Firestore'a kaydeder."""
+def save_products(df):
+    """Ürün DataFrame'ini CSV dosyasına kaydeder."""
     try:
-        # SKU'yu doküman ID'si olarak kullan
-        PRODUCTS_COLLECTION.document(sku).set({"Urun Adi": product_name})
+        # Boş DataFrame kaydetmemek için kontrol (dosyayı boşaltmayı engeller)
+        if df.empty and os.path.exists(PRODUCTS_FILE):
+            st.warning("Kaydedilecek ürün bulunamadı. Mevcut ürün dosyası boşaltılmadı.")
+            return False # Kaydetme işlemi yapılmadı
+        
+        df.to_csv(PRODUCTS_FILE, index=False, encoding='utf-8', header=True)
         return True
     except Exception as e:
-        st.error(f"Yeni ürün Firebase Firestore'a kaydedilirken bir hata oluştu: {e}")
+        st.error(f"Ürünler kaydedilirken bir hata oluştu: {e}")
         return False
 
 # --- Depo Giriş/Çıkışlarını Yükle ve Kaydet ---
-@st.cache_data(ttl=1) # Depo girişleri sık değişir, önbelleği kısa tut
-def load_warehouse_entries_from_firestore():
-    """Firestore'dan depo giriş/çıkışlarını yükler."""
-    try:
-        docs = WAREHOUSE_ENTRIES_COLLECTION.order_by('Tarih', direction=firestore.Query.DESCENDING).stream()
-        entries_list = []
-        for doc in docs:
-            entry_data = doc.to_dict()
-            entries_list.append(entry_data)
-        
-        df = pd.DataFrame(entries_list)
-        
-        # Gerekli sütunların varlığını kontrol et
-        required_cols = ['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']
-        if not all(col in df.columns for col in required_cols):
-            st.sidebar.error("Depo girişleri koleksiyonunda eksik sütunlar var. Lütfen Firestore'daki 'warehouse_entries' koleksiyonunuzu kontrol edin.")
-            return pd.DataFrame(columns=required_cols)
-
-        # Tarih sütununu düzgünce datetime.date objesine çevir
-        if 'Tarih' in df.columns:
-            df['Tarih'] = df['Tarih'].apply(lambda x: datetime.datetime.strptime(x, '%Y-%m-%d').date() if isinstance(x, str) else x)
-
-        if df.empty:
-            st.warning("Depo girişleri listesi boş görünüyor. Yeni girişler beklenecek.")
-        else:
-            st.sidebar.success("Depo girişleri Firebase Firestore'dan başarıyla yüklendi.")
-        return df
-    except Exception as e:
-        st.error(f"Depo girişleri Firebase Firestore'dan yüklenirken bir hata oluştu: {e}")
+@st.cache_data(ttl=1) 
+def load_warehouse_entries():
+    """
+    warehouse_entries.csv dosyasını yükler. 
+    Dosya yoksa veya boşsa boş bir DataFrame oluşturur ve başlıkları belirler.
+    """
+    if os.path.exists(WAREHOUSE_ENTRIES_FILE):
+        try:
+            df = pd.read_csv(WAREHOUSE_ENTRIES_FILE, encoding='utf-8')
+            if 'Tarih' in df.columns:
+                df['Tarih'] = pd.to_datetime(df['Tarih']).dt.date
+            # Yeni sütun 'Islem Tipi' yoksa ekle ve varsayılan değer ata (eski kayıtlar için 'Giriş')
+            if 'Islem Tipi' not in df.columns:
+                df['Islem Tipi'] = 'Giriş'
+            return df
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(WAREHOUSE_ENTRIES_FILE, encoding='windows-1254')
+                st.sidebar.warning(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası UTF-8 olarak okunamadı, 'windows-1254' ile yüklendi.")
+                if 'Tarih' in df.columns:
+                    df['Tarih'] = pd.to_datetime(df['Tarih']).dt.date
+                if 'Islem Tipi' not in df.columns:
+                    df['Islem Tipi'] = 'Giriş'
+                return df
+            except pd.errors.EmptyDataError:
+                st.warning(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası boş. Yeni girişler beklenecek.")
+                # Boş dosya durumunda bile doğru sütunları içeren bir DataFrame döndür
+                return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
+            except Exception as e:
+                st.error(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası okunurken beklenmedik bir hata oluştu (windows-1254): {e}.")
+                return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
+        except pd.errors.EmptyDataError:
+            st.warning(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası boş. Yeni girişler beklenecek.")
+            # Boş dosya durumunda bile doğru sütunları içeren bir DataFrame döndür
+            return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
+        except Exception as e:
+            st.error(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası okunurken beklenmedik bir hata oluştu: {e}.")
+            return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
+    else:
+        # Dosya yoksa, yeni bir DataFrame oluştururken 'Islem Tipi' sütununu da ekle
+        st.info(f"'{WAREHOUSE_ENTRIES_FILE}' dosyası bulunamadı. İlk girişinizi yaparak oluşturabilirsiniz.")
         return pd.DataFrame(columns=['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi'])
 
-def add_warehouse_entry_to_firestore(entry_data):
-    """Yeni depo giriş/çıkışını Firestore'a ekler."""
+def save_warehouse_entry(entry_df):
+    """Depo giriş/çıkış DataFrame'ini CSV dosyasına kaydeder."""
     try:
-        # Otomatik ID ile yeni bir doküman ekle
-        WAREHOUSE_ENTRIES_COLLECTION.add(entry_data)
-        return True
+        # Tarih sütununu string olarak kaydetmek için ISO formatına çevir
+        if 'Tarih' in entry_df.columns:
+            entry_df['Tarih'] = entry_df['Tarih'].apply(lambda x: x.isoformat() if isinstance(x, (datetime.date, datetime.datetime)) else x)
+
+        # Eğer DataFrame boşsa ve dosya zaten varsa, dosyayı silmeyelim
+        if entry_df.empty and os.path.exists(WAREHOUSE_ENTRIES_FILE):
+            st.warning("Kaydedilecek depo işlemi bulunamadı. Mevcut depo dosyası boşaltılmadı.")
+            return False
+
+        entry_df.to_csv(WAREHOUSE_ENTRIES_FILE, index=False, encoding='utf-8', header=True)
+        return True 
     except Exception as e:
-        st.error(f"Depo girişi/çıkışı Firebase Firestore'a kaydedilirken bir hata oluştu: {e}")
-        return False
+        st.error(f"Depo girişi/çıkışı kaydedilirken bir hata oluştu: {e}")
+        return False 
 
 # --- Uygulama Başlığı ---
 st.set_page_config(layout="centered", page_title="Depo Giriş/Çıkış Kayıt Sistemi")
@@ -116,11 +162,12 @@ st.title("📦 Depo Giriş/Çıkış Kayıt Sistemi")
 st.markdown("Gün içinde depoya alınan ve depodan çıkan ürünleri buraya kaydedin.")
 
 # --- Session State Başlatma ---
-if 'products_df' not in st.session_state or st.session_state['products_df'].empty:
-    st.session_state['products_df'] = load_products_from_firestore()
+if 'products_df' not in st.session_state:
+    st.session_state['products_df'] = load_products()
 
-if 'warehouse_entries_df' not in st.session_state or st.session_state['warehouse_entries_df'].empty:
-     st.session_state['warehouse_entries_df'] = load_warehouse_entries_from_firestore()
+# warehouse_entries_df için başlangıçta kontrol ve yükleme
+if 'warehouse_entries_df' not in st.session_state or st.session_state['warehouse_entries_df'] is None:
+     st.session_state['warehouse_entries_df'] = load_warehouse_entries()
 
 products_df = st.session_state['products_df']
 warehouse_entries_df = st.session_state['warehouse_entries_df']
@@ -129,30 +176,41 @@ warehouse_entries_df = st.session_state['warehouse_entries_df']
 # --- Yeni Ürün Ekleme Bölümü ---
 st.markdown("---")
 st.subheader("➕ Yeni Ürün Ekle")
-new_product_sku = st.text_input("Yeni Ürün SKU'su (Benzersiz Olmalı)", key="new_sku_input").strip()
+new_product_sku = st.text_input("Yeni Ürün SKU'su", key="new_sku_input").strip()
 new_product_name = st.text_input("Yeni Ürün Adı", key="new_product_name_input").strip()
 
 if st.button("Yeni Ürünü Kaydet"):
     if new_product_sku and new_product_name:
-        # SKU'nun benzersizliğini Firestore'da kontrol et
-        if PRODUCTS_COLLECTION.document(new_product_sku).get().exists:
+        # SKU'nun benzersizliğini kontrol et
+        if not products_df.empty and new_product_sku in products_df['SKU'].values:
             st.warning(f"SKU '{new_product_sku}' zaten mevcut. Lütfen farklı bir SKU girin.")
         else:
-            if save_product_to_firestore(new_product_sku, new_product_name):
+            new_product_data = pd.DataFrame([{
+                'SKU': new_product_sku,
+                'Urun Adi': new_product_name
+            }])
+            
+            # DataFrame boşsa doğrudan ata, değilse birleştir
+            if products_df.empty:
+                st.session_state['products_df'] = new_product_data
+            else:
+                st.session_state['products_df'] = pd.concat([products_df, new_product_data], ignore_index=True)
+            
+            if save_products(st.session_state['products_df']):
                 st.success(f"Yeni ürün **{new_product_name}** (SKU: **{new_product_sku}**) başarıyla eklendi!")
-                load_products_from_firestore.clear() # Ürün önbelleğini temizle
-                st.session_state['products_df'] = load_products_from_firestore() # Güncel veriyi yeniden yükle
+                load_products.clear() # Ürün önbelleğini temizle
+                st.session_state['products_df'] = load_products() # Güncel veriyi yeniden yükle
                 st.rerun() # Sayfayı yeniden yükle
             else:
                 st.error("Yeni ürün kaydedilirken bir sorun oluştu.")
     else:
         st.warning("Lütfen hem SKU hem de Ürün Adı girin.")
 
-st.markdown("---") 
+st.markdown("---") # Yeni ürün ekleme alanı ile ürün arama arasına ayırıcı
 
 # Eğer ürün listesi boşsa uyarı ver
 if products_df.empty:
-    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen Firebase Firestore'daki ürünler koleksiyonunuzu kontrol edin veya yukarıdan yeni ürün ekleyin.")
+    st.warning("Ürün listesi boş veya yüklenemedi. Lütfen 'products.csv' dosyasını kontrol edin veya yukarıdan yeni ürün ekleyin.")
 else:
     # --- Ürün Arama ve Seçme ---
     st.subheader("Ürün Bilgileri")
@@ -192,71 +250,188 @@ else:
     # --- İşlem Tipi ve Adet Girişi ---
     st.subheader("İşlem Detayları")
 
+    # İşlem tipi seçimi
     transaction_type = st.radio(
         "İşlem Tipi",
         ('Giriş', 'Çıkış'),
         key="transaction_type_val"
     )
 
+    # Adet giriş alanının metnini işlem tipine göre değiştir
     quantity_label = "Alınan Adet" if transaction_type == 'Giriş' else "Verilen Adet"
     
     quantity_default = st.session_state.get("quantity_input_val", 1) 
     quantity = st.number_input(quantity_label, min_value=1, value=quantity_default, step=1, key="quantity_input_val")
 
+    # --- Tarih Seçimi (Varsayılan Bugün) ---
     entry_date = st.date_input("Tarih", value=datetime.date.today(), key="date_input_val")
 
     # --- Kaydet Butonu ---
     if st.button("Kaydet"):
         if selected_sku and quantity > 0:
-            entry_data = {
-                'Tarih': entry_date.isoformat(), # Firebase için tarihleri string olarak sakla
+            new_entry = pd.DataFrame([{
+                'Tarih': entry_date.isoformat(), 
                 'SKU': selected_sku,
                 'Urun Adi': selected_product_name,
                 'Adet': quantity,
-                'Islem Tipi': transaction_type
-            }
+                'Islem Tipi': transaction_type # Yeni sütun eklendi
+            }])
             
-            if add_warehouse_entry_to_firestore(entry_data): 
+            if warehouse_entries_df.empty:
+                updated_df_to_save = new_entry
+            else:
+                updated_df_to_save = pd.concat([warehouse_entries_df, new_entry], ignore_index=True)
+            
+            if save_warehouse_entry(updated_df_to_save): 
                 st.success(f"**{quantity}** adet **{selected_product_name}** ({selected_sku}) **{entry_date.strftime('%d.%m.%Y')}** tarihinde **{transaction_type}** olarak kaydedildi!")
                 
-                load_warehouse_entries_from_firestore.clear() # Önbelleği temizle
-                st.session_state['warehouse_entries_df'] = load_warehouse_entries_from_firestore() # Güncel veriyi yeniden yükle
+                # Önbelleği temizle
+                load_warehouse_entries.clear()
                 
+                # Session State'teki veriyi, diskten yeniden yükleyerek güncelle
+                st.session_state['warehouse_entries_df'] = load_warehouse_entries()
+                
+                # Sayfayı yeniden yükleyerek tüm inputları resetle ve güncel listeyi göster
                 st.rerun() 
             
         else:
             st.warning("Lütfen bir ürün seçin ve geçerli bir adet girin.")
 
     st.markdown("---")
-    st.subheader("Son Depo Girişleri")
+    st.subheader("Son Depo İşlemleri")
     if not warehouse_entries_df.empty:
-        # Tarih sütunu zaten datetime.date objesi olarak yükleniyor, ISO formatına çevirmeye gerek yok
-        st.dataframe(warehouse_entries_df.sort_values(by='Tarih', ascending=False).head(10))
+        # 'Islem Tipi' sütununu da göster
+        st.dataframe(warehouse_entries_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False).head(10))
     else:
-        st.info("Henüz hiç depo girişi yapılmadı.")
+        st.info("Henüz hiç depo işlemi yapılmadı.")
 
     st.markdown("---")
-    st.subheader("Tüm Depo Girişleri")
+    st.subheader("Tüm Depo İşlemleri")
     if not warehouse_entries_df.empty:
+        
+        st.dataframe(warehouse_entries_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']], use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Kayıt Silme Alanı")
+        
+        # Her satır için ayrı bir "Sil" butonu oluşturma
+        if not warehouse_entries_df.empty:
+            for i in range(len(warehouse_entries_df)):
+                row = warehouse_entries_df.iloc[i]
+                
+                # Her buton için benzersiz bir key sağlamak önemli
+                # Burada Tarih ve SKU'yu kullanarak daha benzersiz bir anahtar oluşturuyoruz
+                unique_key = f"delete_button_{i}_{row['SKU']}_{row['Tarih']}_{row['Adet']}_{row['Islem Tipi']}" 
+                
+                # Butonun yanına silinecek kaydın özetini gösterelim
+                display_text = f"{row['Tarih'].strftime('%d.%m.%Y')} - {row['Urun Adi']} ({row['SKU']}) - {row['Adet']} {row['Islem Tipi']}"
+                
+                col_text, col_button = st.columns([0.8, 0.2])
+                with col_text:
+                    st.write(display_text)
+                with col_button:
+                    if st.button(f"Sil", key=unique_key):
+                        # Satırı silme işlemi
+                        st.session_state['warehouse_entries_df'] = st.session_state['warehouse_entries_df'].drop(row.name).reset_index(drop=True)
+                        if save_warehouse_entry(st.session_state['warehouse_entries_df']):
+                            st.success(f"Kayıt başarıyla silindi: {display_text}")
+                            load_warehouse_entries.clear() # Önbelleği temizle
+                            st.session_state['warehouse_entries_df'] = load_warehouse_entries() # Güncel veriyi yükle
+                            st.rerun() # Sayfayı yeniden yükle
+        else:
+            st.info("Silinecek bir depo işlemi bulunmamaktadır.")
+
+
+        st.markdown("---") # Silme alanı ile indirme butonu arasına ayırıcı
         df_for_download = warehouse_entries_df.copy()
-        # Tarihleri indirme için string formatına çevir
         if 'Tarih' in df_for_download.columns:
             df_for_download['Tarih'] = df_for_download['Tarih'].apply(lambda x: x.isoformat() if isinstance(x, datetime.date) else x)
 
-        csv_data = df_for_download.to_csv(index=False, encoding='utf-8-sig', sep=';') 
         st.download_button(
-            label="Tüm Depo Girişlerini İndir (CSV)",
-            data=csv_data,
-            file_name="tum_depo_girisleri.csv",
+            label="Tüm Depo İşlemlerini İndir (CSV)",
+            data=df_for_download.to_csv(index=False, encoding='utf-8').encode('utf-8'),
+            file_name="tum_depo_islemleri.csv",
             mime="text/csv",
         )
-        st.dataframe(warehouse_entries_df)
     else:
-        st.info("İndirilecek depo girişi verisi bulunmuyor.")
+        st.info("Depo işlemleri henüz boş.")
 
     st.markdown("---")
-    st.subheader("Mevcut Ürünler Listesi")
-    if not products_df.empty:
-        st.dataframe(products_df)
+    st.subheader("Raporlama ve Özet")
+
+    if not warehouse_entries_df.empty:
+        # --- Tarih Aralığı Filtreleri ---
+        col_start_date, col_end_date = st.columns(2)
+        with col_start_date:
+            start_date = st.date_input("Başlangıç Tarihi", value=warehouse_entries_df['Tarih'].min() if not warehouse_entries_df.empty else datetime.date.today(), key="report_start_date")
+        with col_end_date:
+            end_date = st.date_input("Bitiş Tarihi", value=warehouse_entries_df['Tarih'].max() if not warehouse_entries_df.empty else datetime.date.today(), key="report_end_date")
+
+        # Tarih filtrelemesi yap
+        filtered_by_date_df = warehouse_entries_df[
+            (warehouse_entries_df['Tarih'] >= start_date) & 
+            (warehouse_entries_df['Tarih'] <= end_date)
+        ].copy()
+
+        if start_date > end_date:
+            st.warning("Başlangıç tarihi bitiş tarihinden sonra olamaz. Lütfen tarihleri kontrol edin.")
+            filtered_by_date_df = pd.DataFrame(columns=warehouse_entries_df.columns) # Hatalı durumda boş DataFrame göster
+
+        # --- Genel Toplam Giriş/Çıkış Özeti (Tarih Filtresi Uygulanmış) ---
+        st.markdown("---")
+        st.subheader(f"Seçili Tarih Aralığı ({start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}) Özeti")
+
+        if not filtered_by_date_df.empty:
+            total_giris_filtered = filtered_by_date_df[filtered_by_date_df['Islem Tipi'] == 'Giriş']['Adet'].sum()
+            total_cikis_filtered = filtered_by_date_df[filtered_by_date_df['Islem Tipi'] == 'Çıkış']['Adet'].sum()
+
+            st.markdown(f"**Toplam Giriş:** {total_giris_filtered} adet")
+            st.markdown(f"**Toplam Çıkış:** {total_cikis_filtered} adet")
+            st.markdown(f"**Net Stok Değişimi:** {total_giris_filtered - total_cikis_filtered} adet")
+        else:
+            st.info("Seçilen tarih aralığında bir işlem bulunmamaktadır.")
+        
+        st.markdown("---")
+
+        # --- Ürüne Göre Filtreleme ve Özet (Tarih Filtresi Uygulanmış) ---
+        st.subheader("Ürüne Göre Raporlama (Seçili Tarih Aralığında)")
+        
+        # Ürün seçenekleri, "Tüm Ürünler" seçeneği ile birlikte
+        # Sadece bu tarih aralığındaki işlemlerde geçen ürünleri gösterelim
+        products_in_filtered_range = filtered_by_date_df['SKU'].unique()
+        product_filter_options_in_range = ['Tüm Ürünler'] + sorted([
+            f"{row['SKU']} - {row['Urun Adi']}" 
+            for index, row in products_df[products_df['SKU'].isin(products_in_filtered_range)].iterrows()
+        ])
+        
+        selected_product_for_report = st.selectbox(
+            "Raporlanacak Ürünü Seçin",
+            options=product_filter_options_in_range,
+            key="product_report_select_val"
+        )
+
+        final_filtered_df = filtered_by_date_df.copy()
+
+        if selected_product_for_report != 'Tüm Ürünler':
+            # Seçilen ürünün SKU'sunu bul
+            selected_sku_for_report = selected_product_for_report.split(' - ')[0]
+            final_filtered_df = filtered_by_date_df[filtered_by_date_df['SKU'] == selected_sku_for_report]
+            
+            if not final_filtered_df.empty:
+                product_total_giris = final_filtered_df[final_filtered_df['Islem Tipi'] == 'Giriş']['Adet'].sum()
+                product_total_cikis = final_filtered_df[final_filtered_df['Islem Tipi'] == 'Çıkış']['Adet'].sum()
+                
+                st.markdown(f"**{selected_product_for_report} için Toplam Giriş:** {product_total_giris} adet")
+                st.markdown(f"**{selected_product_for_report} için Toplam Çıkış:** {product_total_cikis} adet")
+                st.markdown(f"**{selected_product_for_report} için Net Stok Değişimi:** {product_total_giris - product_total_cikis} adet")
+                
+                st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
+            else:
+                st.info(f"{selected_product_for_report} için seçilen tarih aralığında hiçbir işlem bulunamadı.")
+        else:
+            # "Tüm Ürünler" seçiliyse, tarih filtrelenmiş tüm işlemleri göster
+            st.info("Seçilen tarih aralığındaki tüm ürünlerin hareketliliği aşağıdaki tabloda gösterilmektedir.")
+            st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
+            
     else:
-        st.info("Mevcut ürün bulunmuyor. Lütfen yukarıdan yeni ürün ekleyin.")
+        st.info("Raporlama için henüz hiç depo işlemi bulunmamaktadır.")
