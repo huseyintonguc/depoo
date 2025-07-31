@@ -149,7 +149,7 @@ def save_warehouse_entry(entry_df):
         if entry_df.empty and os.path.exists(WAREHOUSE_ENTRIES_FILE):
             st.warning("Kaydedilecek depo işlemi bulunamadı. Mevcut depo dosyası boşaltılmadı.")
             return False
-
+        
         entry_df.to_csv(WAREHOUSE_ENTRIES_FILE, index=False, encoding='utf-8', header=True)
         return True 
     except Exception as e:
