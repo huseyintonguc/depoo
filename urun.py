@@ -422,4 +422,16 @@ else:
                 product_total_cikis = final_filtered_df[final_filtered_df['Islem Tipi'] == 'Çıkış']['Adet'].sum()
                 
                 st.markdown(f"**{selected_product_for_report} için Toplam Giriş:** {product_total_giris} adet")
-                st.markdown(f"**{selected_product_for_report} için Toplam
+                st.markdown(f"**{selected_product_for_report} için Toplam Çıkış:** {product_total_cikis} adet")
+                st.markdown(f"**{selected_product_for_report} için Net Stok Değişimi:** {product_total_giris - product_total_cikis} adet")
+                
+                st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
+            else:
+                st.info(f"{selected_product_for_report} için seçilen tarih aralığında hiçbir işlem bulunamadı.")
+        else:
+            # "Tüm Ürünler" seçiliyse, tarih filtrelenmiş tüm işlemleri göster
+            st.info("Seçilen tarih aralığındaki tüm ürünlerin hareketliliği aşağıdaki tabloda gösterilmektedir.")
+            st.dataframe(final_filtered_df[['Tarih', 'SKU', 'Urun Adi', 'Adet', 'Islem Tipi']].sort_values(by='Tarih', ascending=False), use_container_width=True)
+            
+    else:
+        st.info("Raporlama için henüz hiç depo işlemi bulunmamaktadır.")
