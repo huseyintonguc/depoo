@@ -15,7 +15,7 @@ try:
 
     # Google E-Tablonuzun URL'sini buraya yapıştırın.
     # Örn: "https://docs.google.com/spreadsheets/d/12345abcdefg_XYZ/edit#gid=0"
-    spreadsheet_url = "E-TABLONUZUN_URL_SINI_BURAYA_YAPISTIRIN" 
+    spreadsheet_url = "https://docs.google.com/spreadsheets/d/1UnHZgOBvNf3Y0ANHCvIN4IThLTgxH6iII--3jB-ZJ4E/edit?gid=1619483236#gid=1619483236" 
 
     # E-Tabloyu URL ile açmaya çalışın
     spreadsheet = gc.open_by_url(spreadsheet_url)
